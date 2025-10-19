@@ -1,13 +1,17 @@
 import { ReactNode, createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { supabase, isSupabaseConfigured } from "@/lib/supabase";
+import type { User as SupabaseUser } from "@supabase/supabase-js";
 
 const USER_AUTH_STORAGE_KEY = "wirebazaar-user";
 
 type UserProfile = {
   id: string;
+  email: string | null;
+  phone: string | null;
   contact: string;
   lastLoginAt: string;
+  authUser: SupabaseUser | null;
 };
 
 type PendingVerification = {
@@ -62,16 +66,48 @@ export const UserAuthProvider = ({ children }: { children: ReactNode }) => {
   const [pending, setPending] = useState<PendingVerification | null>(null);
 
   useEffect(() => {
-    try {
-      const stored = localStorage.getItem(USER_AUTH_STORAGE_KEY);
-      if (!stored) return;
-      const parsed: UserProfile = JSON.parse(stored);
-      if (parsed?.contact) {
-        setUser(parsed);
+    if (!isSupabaseConfigured) return;
+
+    const restoreSession = async () => {
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        if (session?.user) {
+          const { data: userData } = await supabase
+            .from('users')
+            .select('*')
+            .eq('id', session.user.id)
+            .maybeSingle();
+
+          if (userData) {
+            const profile: UserProfile = {
+              id: userData.id,
+              email: userData.email,
+              phone: userData.phone,
+              contact: userData.email || userData.phone || '',
+              lastLoginAt: userData.last_login_at,
+              authUser: session.user,
+            };
+            setUser(profile);
+            localStorage.setItem(USER_AUTH_STORAGE_KEY, JSON.stringify(profile));
+          }
+        }
+      } catch (error) {
+        console.error("Failed to restore user session", error);
       }
-    } catch (error) {
-      console.error("Failed to restore user session", error);
-    }
+    };
+
+    restoreSession();
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      if (!session?.user) {
+        setUser(null);
+        localStorage.removeItem(USER_AUTH_STORAGE_KEY);
+      }
+    });
+
+    return () => {
+      subscription.unsubscribe();
+    };
   }, []);
 
   const requestOtp = useCallback(async (contact: string) => {
@@ -122,57 +158,69 @@ export const UserAuthProvider = ({ children }: { children: ReactNode }) => {
         throw new Error("Incorrect OTP. Please try again.");
       }
 
-      let userId: string;
+      if (!isSupabaseConfigured) {
+        throw new Error('Database not configured. Please try again later.');
+      }
 
-      if (isSupabaseConfigured) {
-        try {
-          const { data: sessionRes } = await supabase.auth.getSession();
-          if (!sessionRes?.session) {
-            await supabase.auth.signInAnonymously();
-          }
-        } catch (e) {
-          console.error('Anonymous auth failed', e);
-        }
+      let authUser: SupabaseUser;
+      const isEmail = isValidEmail(trimmedContact);
+      const isPhone = isValidPhone(trimmedContact);
 
-        const { data: authRes } = await supabase.auth.getUser();
-        const authUserId = authRes?.user?.id;
-
-        if (!authUserId) {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) {
+        const { data: signInData, error: signInError } = await supabase.auth.signInAnonymously();
+        if (signInError || !signInData.user) {
           throw new Error('Authentication session could not be established.');
         }
-
-        const { data: existingUser } = await supabase
-          .from('users')
-          .select('id, contact, last_login_at')
-          .eq('id', authUserId)
-          .maybeSingle();
-
-        if (existingUser) {
-          userId = existingUser.id;
-          await supabase
-            .from('users')
-            .update({ last_login_at: new Date().toISOString(), contact: trimmedContact })
-            .eq('id', userId);
-        } else {
-          const { data: newUser, error } = await supabase
-            .from('users')
-            .insert({ id: authUserId, contact: trimmedContact, last_login_at: new Date().toISOString() })
-            .select('id')
-            .single();
-
-          if (error || !newUser) {
-            throw new Error("Failed to create user account. Please try again.");
-          }
-          userId = newUser.id;
-        }
+        authUser = signInData.user;
       } else {
-        userId = `local_${Date.now()}`;
+        authUser = session.user;
+      }
+
+      const { data: existingUser } = await supabase
+        .from('users')
+        .select('*')
+        .eq('id', authUser.id)
+        .maybeSingle();
+
+      let userId: string;
+      if (existingUser) {
+        userId = existingUser.id;
+        await supabase
+          .from('users')
+          .update({
+            last_login_at: new Date().toISOString(),
+            email: isEmail ? trimmedContact : existingUser.email,
+            phone: isPhone ? trimmedContact : existingUser.phone,
+            is_verified: true
+          })
+          .eq('id', userId);
+      } else {
+        const { data: newUser, error } = await supabase
+          .from('users')
+          .insert({
+            id: authUser.id,
+            email: isEmail ? trimmedContact : null,
+            phone: isPhone ? trimmedContact : null,
+            is_verified: true,
+            last_login_at: new Date().toISOString()
+          })
+          .select('*')
+          .single();
+
+        if (error || !newUser) {
+          throw new Error("Failed to create user account. Please try again.");
+        }
+        userId = newUser.id;
       }
 
       const profile: UserProfile = {
         id: userId,
+        email: isEmail ? trimmedContact : null,
+        phone: isPhone ? trimmedContact : null,
         contact: trimmedContact,
         lastLoginAt: new Date().toISOString(),
+        authUser,
       };
 
       setUser(profile);

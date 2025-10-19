@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -9,23 +9,10 @@ import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Switch } from '@/components/ui/switch';
-import { productsData, brands, categories, type Product } from '@/lib/products-data';
+import { brands, categories } from '@/lib/products-data';
+import { db, type Product } from '@/lib/realtime-db';
 import { toast } from 'sonner';
-import { Package, Plus, Pencil, Trash2, Eye, EyeOff } from 'lucide-react';
-
-const PRODUCTS_STORAGE_KEY = 'wire_cable_products';
-
-const getStoredProducts = (): Product[] => {
-  if (typeof window === 'undefined') return productsData;
-  const stored = localStorage.getItem(PRODUCTS_STORAGE_KEY);
-  return stored ? JSON.parse(stored) : productsData;
-};
-
-const saveProducts = (products: Product[]): void => {
-  if (typeof window === 'undefined') return;
-  localStorage.setItem(PRODUCTS_STORAGE_KEY, JSON.stringify(products));
-  window.dispatchEvent(new Event('products-updated'));
-};
+import { Package, Plus, Pencil, Trash2, Eye, EyeOff, RefreshCw } from 'lucide-react';
 
 type ProductFormState = {
   name: string;
@@ -33,12 +20,26 @@ type ProductFormState = {
   category: string;
   color: string;
   description: string;
-  basePrice: string;
-  unitType: 'metres' | 'coils';
-  stockQuantity: string;
-  imageUrl: string;
+  base_price: string;
+  unit_type: 'metres' | 'coils' | 'pieces' | 'rolls';
+  stock_quantity: string;
+  image_url: string;
   specifications: string;
-  isActive: boolean;
+  is_active: boolean;
+};
+
+const emptyForm: ProductFormState = {
+  name: '',
+  brand: brands[0] || '',
+  category: categories[0] || '',
+  color: '',
+  description: '',
+  base_price: '',
+  unit_type: 'metres',
+  stock_quantity: '0',
+  image_url: '',
+  specifications: '',
+  is_active: true,
 };
 
 function ProductFormFields({ formData, onChange }: { formData: ProductFormState; onChange: (field: string, value: string | boolean) => void }) {
@@ -105,50 +106,53 @@ function ProductFormFields({ formData, onChange }: { formData: ProductFormState;
         />
       </div>
 
-      <div className="grid grid-cols-3 gap-4">
+      <div className="grid grid-cols-2 gap-4">
         <div className="space-y-2">
-          <Label htmlFor="basePrice">Price (₹) *</Label>
+          <Label htmlFor="base_price">Base Price (₹) *</Label>
           <Input
-            id="basePrice"
+            id="base_price"
             type="number"
             step="0.01"
-            value={formData.basePrice}
-            onChange={(e) => onChange('basePrice', e.target.value)}
+            value={formData.base_price}
+            onChange={(e) => onChange('base_price', e.target.value)}
             placeholder="0.00"
           />
         </div>
 
         <div className="space-y-2">
-          <Label htmlFor="unitType">Unit Type</Label>
-          <Select value={formData.unitType} onValueChange={(value: 'metres' | 'coils') => onChange('unitType', value)}>
+          <Label htmlFor="unit_type">Unit Type *</Label>
+          <Select value={formData.unit_type} onValueChange={(value) => onChange('unit_type', value)}>
             <SelectTrigger>
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="metres">Metres</SelectItem>
               <SelectItem value="coils">Coils</SelectItem>
+              <SelectItem value="pieces">Pieces</SelectItem>
+              <SelectItem value="rolls">Rolls</SelectItem>
             </SelectContent>
           </Select>
-        </div>
-
-        <div className="space-y-2">
-          <Label htmlFor="stockQuantity">Stock Qty</Label>
-          <Input
-            id="stockQuantity"
-            type="number"
-            value={formData.stockQuantity}
-            onChange={(e) => onChange('stockQuantity', e.target.value)}
-            placeholder="0"
-          />
         </div>
       </div>
 
       <div className="space-y-2">
-        <Label htmlFor="imageUrl">Image URL</Label>
+        <Label htmlFor="stock_quantity">Stock Quantity *</Label>
         <Input
-          id="imageUrl"
-          value={formData.imageUrl}
-          onChange={(e) => onChange('imageUrl', e.target.value)}
+          id="stock_quantity"
+          type="number"
+          value={formData.stock_quantity}
+          onChange={(e) => onChange('stock_quantity', e.target.value)}
+          placeholder="0"
+        />
+      </div>
+
+      <div className="space-y-2">
+        <Label htmlFor="image_url">Image URL</Label>
+        <Input
+          id="image_url"
+          type="url"
+          value={formData.image_url}
+          onChange={(e) => onChange('image_url', e.target.value)}
           placeholder="https://example.com/image.jpg"
         />
       </div>
@@ -160,325 +164,276 @@ function ProductFormFields({ formData, onChange }: { formData: ProductFormState;
           value={formData.specifications}
           onChange={(e) => onChange('specifications', e.target.value)}
           placeholder='{"voltage": "1100V", "conductor": "Copper"}'
-          rows={4}
+          rows={3}
         />
       </div>
 
       <div className="flex items-center space-x-2">
         <Switch
-          id="isActive"
-          checked={formData.isActive}
-          onCheckedChange={(checked) => onChange('isActive', checked)}
+          id="is_active"
+          checked={formData.is_active}
+          onCheckedChange={(checked) => onChange('is_active', checked)}
         />
-        <Label htmlFor="isActive">Publish on website</Label>
+        <Label htmlFor="is_active">Product is active and visible</Label>
       </div>
     </div>
   );
 }
 
-export const ProductsManagement = () => {
+export function ProductsManagement() {
   const [products, setProducts] = useState<Product[]>([]);
-  const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
-  const [isEditDialogOpen, setIsEditDialogOpen] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
+  const [formData, setFormData] = useState<ProductFormState>(emptyForm);
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
+  const [isDialogOpen, setIsDialogOpen] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
 
-  const [formData, setFormData] = useState({
-    name: '',
-    brand: '',
-    category: '',
-    color: '',
-    description: '',
-    basePrice: '',
-    unitType: 'metres' as 'metres' | 'coils',
-    stockQuantity: '',
-    imageUrl: '',
-    specifications: '',
-    isActive: true
-  });
+  const loadProducts = useCallback(async () => {
+    setIsLoading(true);
+    try {
+      const data = await db.getProducts();
+      setProducts(data);
+    } catch (error) {
+      console.error('Error loading products:', error);
+      toast.error('Failed to load products');
+    } finally {
+      setIsLoading(false);
+    }
+  }, []);
 
   useEffect(() => {
     loadProducts();
-  }, []);
 
-  const loadProducts = () => {
-    setProducts(getStoredProducts());
-  };
-
-  const resetForm = () => {
-    setFormData({
-      name: '',
-      brand: '',
-      category: '',
-      color: '',
-      description: '',
-      basePrice: '',
-      unitType: 'metres',
-      stockQuantity: '',
-      imageUrl: '',
-      specifications: '',
-      isActive: true
+    const unsubscribe = db.subscribeToProducts((payload) => {
+      if (payload.eventType === 'INSERT' && payload.new) {
+        setProducts((prev) => [payload.new!, ...prev]);
+        toast.success('New product added');
+      } else if (payload.eventType === 'UPDATE' && payload.new) {
+        setProducts((prev) =>
+          prev.map((p) => (p.id === payload.new!.id ? payload.new! : p))
+        );
+        toast.info('Product updated');
+      } else if (payload.eventType === 'DELETE' && payload.old) {
+        setProducts((prev) => prev.filter((p) => p.id !== payload.old!.id));
+        toast.info('Product deleted');
+      }
     });
+
+    return () => {
+      unsubscribe();
+    };
+  }, [loadProducts]);
+
+  const handleFormChange = (field: string, value: string | boolean) => {
+    setFormData((prev) => ({ ...prev, [field]: value }));
   };
 
-  const handleAddProduct = () => {
-    if (!formData.name || !formData.brand || !formData.category || !formData.basePrice) {
-      toast.error('Please fill in all required fields');
-      return;
-    }
-
-    const newProduct: Product = {
-      id: `product_${Date.now()}`,
-      name: formData.name,
-      brand: formData.brand,
-      category: formData.category,
-      color: formData.color.split(',').map(c => c.trim()).filter(Boolean),
-      description: formData.description,
-      specifications: formData.specifications ? JSON.parse(formData.specifications) : {},
-      basePrice: parseFloat(formData.basePrice),
-      unitType: formData.unitType,
-      stockQuantity: parseInt(formData.stockQuantity) || 0,
-      imageUrl: formData.imageUrl || 'https://images.pexels.com/photos/257736/pexels-photo-257736.jpeg',
-      isActive: formData.isActive
-    };
-
-    const updatedProducts = [...products, newProduct];
-    saveProducts(updatedProducts);
-    setProducts(updatedProducts);
-    setIsAddDialogOpen(false);
-    resetForm();
-    toast.success('Product added successfully');
-  };
-
-  const handleEditProduct = () => {
-    if (!editingProduct) return;
-
-    if (!formData.name || !formData.brand || !formData.category || !formData.basePrice) {
-      toast.error('Please fill in all required fields');
-      return;
-    }
-
-    const updatedProduct: Product = {
-      ...editingProduct,
-      name: formData.name,
-      brand: formData.brand,
-      category: formData.category,
-      color: formData.color.split(',').map(c => c.trim()).filter(Boolean),
-      description: formData.description,
-      specifications: formData.specifications ? JSON.parse(formData.specifications) : {},
-      basePrice: parseFloat(formData.basePrice),
-      unitType: formData.unitType,
-      stockQuantity: parseInt(formData.stockQuantity) || 0,
-      imageUrl: formData.imageUrl || 'https://images.pexels.com/photos/257736/pexels-photo-257736.jpeg',
-      isActive: formData.isActive
-    };
-
-    const updatedProducts = products.map(p => p.id === editingProduct.id ? updatedProduct : p);
-    saveProducts(updatedProducts);
-    setProducts(updatedProducts);
-    setIsEditDialogOpen(false);
+  const handleAdd = () => {
     setEditingProduct(null);
-    resetForm();
-    toast.success('Product updated successfully');
+    setFormData(emptyForm);
+    setIsDialogOpen(true);
   };
 
-  const openEditDialog = (product: Product) => {
+  const handleEdit = (product: Product) => {
     setEditingProduct(product);
     setFormData({
       name: product.name,
       brand: product.brand,
       category: product.category,
       color: product.color.join(', '),
-      description: product.description,
-      basePrice: product.basePrice.toString(),
-      unitType: product.unitType,
-      stockQuantity: product.stockQuantity.toString(),
-      imageUrl: product.imageUrl,
-      specifications: JSON.stringify(product.specifications, null, 2),
-      isActive: product.isActive
+      description: product.description || '',
+      base_price: product.base_price.toString(),
+      unit_type: product.unit_type as any,
+      stock_quantity: product.stock_quantity.toString(),
+      image_url: product.image_url || '',
+      specifications: JSON.stringify(product.specifications || {}),
+      is_active: product.is_active,
     });
-    setIsEditDialogOpen(true);
+    setIsDialogOpen(true);
   };
 
-  const handleToggleStatus = (productId: string) => {
-    const updatedProducts = products.map(p =>
-      p.id === productId ? { ...p, isActive: !p.isActive } : p
-    );
-    saveProducts(updatedProducts);
-    setProducts(updatedProducts);
-    toast.success('Product status updated');
+  const handleDelete = async (product: Product) => {
+    if (!confirm(`Are you sure you want to delete "${product.name}"?`)) return;
+
+    try {
+      await db.deleteProduct(product.id);
+      toast.success('Product deleted successfully');
+    } catch (error) {
+      console.error('Error deleting product:', error);
+      toast.error('Failed to delete product');
+    }
   };
 
-  const handleDeleteProduct = (productId: string) => {
-    if (!confirm('Are you sure you want to delete this product?')) return;
+  const handleSubmit = async () => {
+    if (!formData.name || !formData.brand || !formData.category || !formData.base_price) {
+      toast.error('Please fill in all required fields');
+      return;
+    }
 
-    const updatedProducts = products.filter(p => p.id !== productId);
-    saveProducts(updatedProducts);
-    setProducts(updatedProducts);
-    toast.success('Product deleted');
+    setIsSaving(true);
+    try {
+      let specs = {};
+      if (formData.specifications) {
+        try {
+          specs = JSON.parse(formData.specifications);
+        } catch {
+          toast.error('Invalid JSON in specifications');
+          setIsSaving(false);
+          return;
+        }
+      }
+
+      const productData = {
+        name: formData.name,
+        brand: formData.brand,
+        category: formData.category,
+        color: formData.color.split(',').map(c => c.trim()).filter(Boolean),
+        description: formData.description || null,
+        specifications: specs,
+        base_price: parseFloat(formData.base_price),
+        unit_type: formData.unit_type,
+        stock_quantity: parseInt(formData.stock_quantity) || 0,
+        image_url: formData.image_url || null,
+        brochure_url: null,
+        is_active: formData.is_active,
+        created_by: null,
+      };
+
+      if (editingProduct) {
+        await db.updateProduct(editingProduct.id, productData);
+        toast.success('Product updated successfully');
+      } else {
+        await db.createProduct(productData);
+        toast.success('Product created successfully');
+      }
+
+      setIsDialogOpen(false);
+      setFormData(emptyForm);
+      setEditingProduct(null);
+    } catch (error) {
+      console.error('Error saving product:', error);
+      toast.error('Failed to save product');
+    } finally {
+      setIsSaving(false);
+    }
   };
 
-  const stats = {
-    total: products.length,
-    active: products.filter(p => p.isActive).length,
-    inactive: products.filter(p => !p.isActive).length,
-    outOfStock: products.filter(p => p.stockQuantity === 0).length
+  const toggleProductStatus = async (product: Product) => {
+    try {
+      await db.updateProduct(product.id, { is_active: !product.is_active });
+      toast.success(`Product ${product.is_active ? 'deactivated' : 'activated'}`);
+    } catch (error) {
+      console.error('Error toggling product status:', error);
+      toast.error('Failed to update product status');
+    }
   };
-
-  const handleFormChange = useCallback((field: string, value: string | boolean) => {
-    setFormData(prev => ({ ...prev, [field]: value }));
-  }, []);
-
 
   return (
-    <div className="space-y-6">
-      <div className="grid gap-4 md:grid-cols-4">
-        <Card>
-          <CardHeader className="pb-2">
-            <CardDescription>Total Products</CardDescription>
-            <CardTitle className="text-3xl">{stats.total}</CardTitle>
-          </CardHeader>
-        </Card>
-        <Card>
-          <CardHeader className="pb-2">
-            <CardDescription>Active</CardDescription>
-            <CardTitle className="text-3xl text-green-600">{stats.active}</CardTitle>
-          </CardHeader>
-        </Card>
-        <Card>
-          <CardHeader className="pb-2">
-            <CardDescription>Inactive</CardDescription>
-            <CardTitle className="text-3xl text-orange-600">{stats.inactive}</CardTitle>
-          </CardHeader>
-        </Card>
-        <Card>
-          <CardHeader className="pb-2">
-            <CardDescription>Out of Stock</CardDescription>
-            <CardTitle className="text-3xl text-red-600">{stats.outOfStock}</CardTitle>
-          </CardHeader>
-        </Card>
-      </div>
-
-      <Card>
-        <CardHeader>
-          <div className="flex items-center justify-between">
-            <div>
-              <CardTitle>Product Catalog</CardTitle>
-              <CardDescription>Add and manage products for your store</CardDescription>
-            </div>
-            <Dialog open={isAddDialogOpen} onOpenChange={setIsAddDialogOpen}>
+    <Card>
+      <CardHeader>
+        <div className="flex items-center justify-between">
+          <div>
+            <CardTitle className="flex items-center gap-2">
+              <Package className="h-5 w-5" />
+              Products Management
+            </CardTitle>
+            <CardDescription>Add, edit, and manage your product catalog</CardDescription>
+          </div>
+          <div className="flex gap-2">
+            <Button variant="outline" size="sm" onClick={loadProducts} disabled={isLoading}>
+              <RefreshCw className={`h-4 w-4 mr-2 ${isLoading ? 'animate-spin' : ''}`} />
+              Refresh
+            </Button>
+            <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
               <DialogTrigger asChild>
-                <Button className="gap-2" onClick={resetForm}>
+                <Button onClick={handleAdd} className="gap-2">
                   <Plus className="h-4 w-4" />
                   Add Product
                 </Button>
               </DialogTrigger>
               <DialogContent className="max-w-2xl">
                 <DialogHeader>
-                  <DialogTitle>Add New Product</DialogTitle>
-                  <DialogDescription>Fill in the product details to add it to your catalog</DialogDescription>
+                  <DialogTitle>{editingProduct ? 'Edit Product' : 'Add New Product'}</DialogTitle>
+                  <DialogDescription>
+                    {editingProduct ? 'Update product details' : 'Add a new product to your catalog'}
+                  </DialogDescription>
                 </DialogHeader>
                 <ProductFormFields formData={formData} onChange={handleFormChange} />
                 <DialogFooter>
-                  <Button variant="outline" onClick={() => setIsAddDialogOpen(false)}>Cancel</Button>
-                  <Button onClick={handleAddProduct}>Add Product</Button>
+                  <Button variant="outline" onClick={() => setIsDialogOpen(false)} disabled={isSaving}>
+                    Cancel
+                  </Button>
+                  <Button onClick={handleSubmit} disabled={isSaving}>
+                    {isSaving ? 'Saving...' : editingProduct ? 'Update Product' : 'Add Product'}
+                  </Button>
                 </DialogFooter>
               </DialogContent>
             </Dialog>
           </div>
-        </CardHeader>
-        <CardContent>
-          {products.length === 0 ? (
-            <div className="flex flex-col items-center justify-center py-12 text-center">
-              <Package className="h-12 w-12 text-muted-foreground mb-4" />
-              <p className="text-lg font-semibold mb-2">No products yet</p>
-              <p className="text-sm text-muted-foreground">Add your first product to get started</p>
-            </div>
-          ) : (
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Product</TableHead>
-                  <TableHead>Brand</TableHead>
-                  <TableHead>Category</TableHead>
-                  <TableHead>Price</TableHead>
-                  <TableHead>Stock</TableHead>
-                  <TableHead>Status</TableHead>
-                  <TableHead className="text-right">Actions</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {products.map((product) => (
-                  <TableRow key={product.id}>
-                    <TableCell>
-                      <div className="flex items-center gap-3">
-                        <div className="w-10 h-10 rounded overflow-hidden bg-accent/20">
-                          <img src={product.imageUrl} alt={product.name} className="w-full h-full object-cover" />
-                        </div>
-                        <div>
-                          <p className="font-medium line-clamp-1">{product.name}</p>
-                          <p className="text-xs text-muted-foreground">{product.color.slice(0, 3).join(', ')}</p>
-                        </div>
-                      </div>
-                    </TableCell>
-                    <TableCell>{product.brand}</TableCell>
-                    <TableCell className="text-sm">{product.category}</TableCell>
-                    <TableCell className="font-medium">₹{product.basePrice.toFixed(2)}/{product.unitType}</TableCell>
-                    <TableCell>
-                      <Badge variant={product.stockQuantity > 0 ? 'secondary' : 'destructive'}>
-                        {product.stockQuantity}
-                      </Badge>
-                    </TableCell>
-                    <TableCell>
+        </div>
+      </CardHeader>
+      <CardContent>
+        {isLoading ? (
+          <div className="text-center py-8 text-muted-foreground">Loading products...</div>
+        ) : products.length === 0 ? (
+          <div className="text-center py-8 text-muted-foreground">
+            <Package className="h-12 w-12 mx-auto mb-4 opacity-50" />
+            <p>No products found. Add your first product to get started.</p>
+          </div>
+        ) : (
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Product</TableHead>
+                <TableHead>Brand</TableHead>
+                <TableHead>Category</TableHead>
+                <TableHead>Price</TableHead>
+                <TableHead>Stock</TableHead>
+                <TableHead>Status</TableHead>
+                <TableHead className="text-right">Actions</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {products.map((product) => (
+                <TableRow key={product.id}>
+                  <TableCell>
+                    <div className="font-medium">{product.name}</div>
+                  </TableCell>
+                  <TableCell>{product.brand}</TableCell>
+                  <TableCell>
+                    <Badge variant="outline">{product.category}</Badge>
+                  </TableCell>
+                  <TableCell>₹{product.base_price.toFixed(2)}/{product.unit_type}</TableCell>
+                  <TableCell>{product.stock_quantity}</TableCell>
+                  <TableCell>
+                    <Badge variant={product.is_active ? 'default' : 'secondary'}>
+                      {product.is_active ? 'Active' : 'Inactive'}
+                    </Badge>
+                  </TableCell>
+                  <TableCell className="text-right">
+                    <div className="flex justify-end gap-2">
                       <Button
                         variant="ghost"
                         size="sm"
-                        onClick={() => handleToggleStatus(product.id)}
-                        className="gap-2"
+                        onClick={() => toggleProductStatus(product)}
+                        title={product.is_active ? 'Deactivate' : 'Activate'}
                       >
-                        {product.isActive ? (
-                          <>
-                            <Eye className="h-4 w-4 text-green-600" />
-                            <span className="text-green-600">Active</span>
-                          </>
-                        ) : (
-                          <>
-                            <EyeOff className="h-4 w-4 text-orange-600" />
-                            <span className="text-orange-600">Inactive</span>
-                          </>
-                        )}
+                        {product.is_active ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
                       </Button>
-                    </TableCell>
-                    <TableCell className="text-right">
-                      <div className="flex items-center justify-end gap-2">
-                        <Button variant="ghost" size="sm" onClick={() => openEditDialog(product)}>
-                          <Pencil className="h-4 w-4" />
-                        </Button>
-                        <Button variant="ghost" size="sm" onClick={() => handleDeleteProduct(product.id)} className="text-destructive">
-                          <Trash2 className="h-4 w-4" />
-                        </Button>
-                      </div>
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          )}
-        </CardContent>
-      </Card>
-
-      <Dialog open={isEditDialogOpen} onOpenChange={setIsEditDialogOpen}>
-        <DialogContent className="max-w-2xl">
-          <DialogHeader>
-            <DialogTitle>Edit Product</DialogTitle>
-            <DialogDescription>Update product details</DialogDescription>
-          </DialogHeader>
-          <ProductFormFields formData={formData} onChange={handleFormChange} />
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setIsEditDialogOpen(false)}>Cancel</Button>
-            <Button onClick={handleEditProduct}>Save Changes</Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-    </div>
+                      <Button variant="ghost" size="sm" onClick={() => handleEdit(product)}>
+                        <Pencil className="h-4 w-4" />
+                      </Button>
+                      <Button variant="ghost" size="sm" onClick={() => handleDelete(product)} className="text-destructive">
+                        <Trash2 className="h-4 w-4" />
+                      </Button>
+                    </div>
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        )}
+      </CardContent>
+    </Card>
   );
-};
+}

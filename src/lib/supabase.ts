@@ -12,24 +12,71 @@ export const supabase = isSupabaseConfigured
 export type Database = {
   public: {
     Tables: {
-      users: {
+      admin_users: {
         Row: {
           id: string;
-          contact: string;
-          last_login_at: string;
+          email: string;
+          password_hash: string;
+          full_name: string | null;
+          role: string;
+          is_active: boolean;
+          last_login_at: string | null;
           created_at: string;
+          updated_at: string;
         };
         Insert: {
           id?: string;
-          contact: string;
-          last_login_at?: string;
+          email: string;
+          password_hash: string;
+          full_name?: string | null;
+          role?: string;
+          is_active?: boolean;
+          last_login_at?: string | null;
           created_at?: string;
+          updated_at?: string;
         };
         Update: {
           id?: string;
-          contact?: string;
+          email?: string;
+          password_hash?: string;
+          full_name?: string | null;
+          role?: string;
+          is_active?: boolean;
+          last_login_at?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+      };
+      users: {
+        Row: {
+          id: string;
+          email: string | null;
+          phone: string | null;
+          auth_method: string;
+          is_verified: boolean;
+          last_login_at: string;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          email?: string | null;
+          phone?: string | null;
+          auth_method?: string;
+          is_verified?: boolean;
           last_login_at?: string;
           created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          email?: string | null;
+          phone?: string | null;
+          auth_method?: string;
+          is_verified?: boolean;
+          last_login_at?: string;
+          created_at?: string;
+          updated_at?: string;
         };
       };
       user_profiles: {
@@ -208,6 +255,62 @@ export type Database = {
           contact_phone?: string;
           additional_requirements?: string | null;
           status?: string;
+          created_at?: string;
+          updated_at?: string;
+        };
+      };
+      products: {
+        Row: {
+          id: string;
+          name: string;
+          brand: string;
+          category: string;
+          color: string[];
+          description: string | null;
+          specifications: any;
+          base_price: number;
+          unit_type: string;
+          stock_quantity: number;
+          image_url: string | null;
+          brochure_url: string | null;
+          is_active: boolean;
+          created_by: string | null;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          name: string;
+          brand: string;
+          category: string;
+          color?: string[];
+          description?: string | null;
+          specifications?: any;
+          base_price: number;
+          unit_type?: string;
+          stock_quantity?: number;
+          image_url?: string | null;
+          brochure_url?: string | null;
+          is_active?: boolean;
+          created_by?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          name?: string;
+          brand?: string;
+          category?: string;
+          color?: string[];
+          description?: string | null;
+          specifications?: any;
+          base_price?: number;
+          unit_type?: string;
+          stock_quantity?: number;
+          image_url?: string | null;
+          brochure_url?: string | null;
+          is_active?: boolean;
+          created_by?: string | null;
           created_at?: string;
           updated_at?: string;
         };

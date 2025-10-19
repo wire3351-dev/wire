@@ -1,4 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
+import { supabase, isSupabaseConfigured } from "@/lib/supabase";
+import { toast } from "sonner";
 
 const OWNER_AUTH_STORAGE_KEY = "owner-dashboard-authenticated";
 const OWNER_EMAIL = "owner@cablehq.com";
@@ -6,7 +8,7 @@ const OWNER_PASSWORD = "SecurePass123!";
 
 interface OwnerAuthContextValue {
   isAuthenticated: boolean;
-  login: (email: string, password: string) => boolean;
+  login: (email: string, password: string) => Promise<boolean>;
   logout: () => void;
 }
 
@@ -17,46 +19,73 @@ export const OwnerAuthProvider = ({ children }: { children: React.ReactNode }) =
     if (typeof window === "undefined") {
       return false;
     }
-
     return window.localStorage.getItem(OWNER_AUTH_STORAGE_KEY) === "true";
   });
 
   useEffect(() => {
-    if (typeof window === "undefined") {
-      return;
-    }
+    if (!isSupabaseConfigured) return;
 
-    const handleStorage = (event: StorageEvent) => {
-      if (event.key === OWNER_AUTH_STORAGE_KEY) {
-        setIsAuthenticated(event.newValue === "true");
+    const checkSession = async () => {
+      const stored = localStorage.getItem(OWNER_AUTH_STORAGE_KEY);
+      if (stored === "true") {
+        const { data: { session } } = await supabase.auth.getSession();
+        if (!session) {
+          setIsAuthenticated(false);
+          localStorage.removeItem(OWNER_AUTH_STORAGE_KEY);
+        }
       }
     };
 
-    window.addEventListener("storage", handleStorage);
-    return () => window.removeEventListener("storage", handleStorage);
+    checkSession();
   }, []);
 
-  const login = useCallback((email: string, password: string) => {
+  const login = useCallback(async (email: string, password: string) => {
     const normalizedEmail = email.trim().toLowerCase();
     const normalizedPassword = password.trim();
 
-    const success = normalizedEmail === OWNER_EMAIL && normalizedPassword === OWNER_PASSWORD;
+    if (normalizedEmail !== OWNER_EMAIL || normalizedPassword !== OWNER_PASSWORD) {
+      toast.error('Invalid credentials');
+      return false;
+    }
 
-    if (success) {
+    if (isSupabaseConfigured) {
+      try {
+        const { data: signInData, error: signInError } = await supabase.auth.signInAnonymously();
+        if (signInError) {
+          console.error('Admin auth failed:', signInError);
+          toast.error('Authentication failed. Please try again.');
+          return false;
+        }
+
+        setIsAuthenticated(true);
+        if (typeof window !== "undefined") {
+          window.localStorage.setItem(OWNER_AUTH_STORAGE_KEY, "true");
+        }
+        toast.success('Welcome back!');
+        return true;
+      } catch (error) {
+        console.error('Login error:', error);
+        toast.error('Login failed. Please try again.');
+        return false;
+      }
+    } else {
       setIsAuthenticated(true);
       if (typeof window !== "undefined") {
         window.localStorage.setItem(OWNER_AUTH_STORAGE_KEY, "true");
       }
+      return true;
     }
-
-    return success;
   }, []);
 
-  const logout = useCallback(() => {
+  const logout = useCallback(async () => {
     setIsAuthenticated(false);
     if (typeof window !== "undefined") {
       window.localStorage.removeItem(OWNER_AUTH_STORAGE_KEY);
     }
+    if (isSupabaseConfigured) {
+      await supabase.auth.signOut();
+    }
+    toast.info('Logged out successfully');
   }, []);
 
   const value = useMemo(

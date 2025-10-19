@@ -6,7 +6,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
 import { ArrowLeft, Search, ShoppingCart } from 'lucide-react';
-import { getProducts, brands, categories, type Product } from '@/lib/products-data';
+import { brands, categories } from '@/lib/products-data';
+import { db, type Product } from '@/lib/realtime-db';
 import { getCartItemCount } from '@/lib/cart-storage';
 
 const Products = () => {
@@ -20,21 +21,31 @@ const Products = () => {
   useEffect(() => {
     loadProducts();
 
-    const handleProductsUpdate = () => {
-      loadProducts();
-    };
+    const unsubscribe = db.subscribeToProducts((payload) => {
+      if (payload.eventType === 'INSERT' && payload.new) {
+        setProducts((prev) => [payload.new!, ...prev]);
+      } else if (payload.eventType === 'UPDATE' && payload.new) {
+        setProducts((prev) =>
+          prev.map((p) => (p.id === payload.new!.id ? payload.new! : p))
+        );
+      } else if (payload.eventType === 'DELETE' && payload.old) {
+        setProducts((prev) => prev.filter((p) => p.id !== payload.old!.id));
+      }
+    });
 
-    window.addEventListener('products-updated', handleProductsUpdate);
-    return () => window.removeEventListener('products-updated', handleProductsUpdate);
+    return () => {
+      unsubscribe();
+    };
   }, []);
 
-  const loadProducts = () => {
-    setProducts(getProducts());
+  const loadProducts = async () => {
+    const data = await db.getProducts();
+    setProducts(data);
   };
 
   const filteredProducts = useMemo(() => {
     return products.filter(product => {
-      if (!product.isActive) return false;
+      if (!product.is_active) return false;
 
       const matchesSearch = product.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
                            product.brand.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -133,7 +144,7 @@ const Products = () => {
             <Card key={product.id} className="overflow-hidden hover:shadow-lg transition-all duration-300 flex flex-col">
               <div className="aspect-video overflow-hidden bg-accent/20">
                 <img
-                  src={product.imageUrl}
+                  src={product.image_url || 'https://images.pexels.com/photos/257736/pexels-photo-257736.jpeg'}
                   alt={product.name}
                   className="w-full h-full object-cover hover:scale-105 transition-transform duration-300"
                 />
@@ -142,7 +153,7 @@ const Products = () => {
               <CardHeader>
                 <div className="flex items-start justify-between gap-2 mb-2">
                   <CardTitle className="text-lg line-clamp-2">{product.name}</CardTitle>
-                  {product.stockQuantity > 0 ? (
+                  {product.stock_quantity > 0 ? (
                     <Badge variant="secondary">In Stock</Badge>
                   ) : (
                     <Badge variant="destructive">Out of Stock</Badge>
@@ -160,8 +171,8 @@ const Products = () => {
                   {product.description}
                 </p>
                 <div className="text-2xl font-bold text-primary">
-                  ₹{product.basePrice.toFixed(2)}
-                  <span className="text-sm font-normal text-muted-foreground">/{product.unitType}</span>
+                  ₹{product.base_price.toFixed(2)}
+                  <span className="text-sm font-normal text-muted-foreground">/{product.unit_type}</span>
                 </div>
               </CardContent>
 
@@ -169,7 +180,7 @@ const Products = () => {
                 <Button
                   className="w-full bg-gradient-to-r from-primary to-secondary"
                   onClick={() => navigate(`/products/${product.id}`)}
-                  disabled={product.stockQuantity === 0}
+                  disabled={product.stock_quantity === 0}
                 >
                   View Details
                 </Button>

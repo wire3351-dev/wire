@@ -27,20 +27,21 @@ const OwnerLogin = () => {
     return null;
   }
 
-  const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
+  const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
 
     setIsSubmitting(true);
-    const success = login(email, password);
-    setIsSubmitting(false);
+    try {
+      const success = await login(email, password);
 
-    if (success) {
-      toast.success("Signed in successfully");
-      navigate("/owner", { replace: true });
-      return;
+      if (success) {
+        navigate("/owner", { replace: true });
+      }
+    } catch (error) {
+      console.error('Login error:', error);
+    } finally {
+      setIsSubmitting(false);
     }
-
-    toast.error("Invalid owner credentials");
   };
 
   return (
